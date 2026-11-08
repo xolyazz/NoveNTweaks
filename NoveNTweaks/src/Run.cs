@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
+using System.Xml.Linq;
 
 namespace NoveNTweaks;
 
@@ -13,6 +15,18 @@ namespace NoveNTweaks;
 // faster process spawning, and output capture helpers.
 public static class Run
 {
+    private static void KillProcessTree(Process process)
+    {
+        try
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+        catch
+        {
+            try { if (!process.HasExited) process.Kill(); } catch { }
+        }
+    }
+
     // Run a command line hidden, wait for completion, return exit code.
     // v2.3: Now checks SafetyGuard.IsCommandSafe before executing — refuses
     // to run commands containing dangerous patterns (format, diskpart, etc.).
@@ -54,13 +68,15 @@ public static class Run
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
             };
-            var p = Process.Start(psi);
+            using var p = Process.Start(psi);
             if (p == null) return -1;
-            p.WaitForExit(30000);
-            if (!p.HasExited) { try { p.Kill(); } catch { } return -1; }
+            if (!p.WaitForExit(30000))
+            {
+                KillProcessTree(p);
+                p.WaitForExit();
+                return -1;
+            }
             return p.ExitCode;
         }
         catch { return -1; }
@@ -99,20 +115,22 @@ public static class Run
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
             };
-            var p = Process.Start(psi);
+            using var p = Process.Start(psi);
             if (p == null) return -1;
-            p.WaitForExit(timeoutMs);
-            if (!p.HasExited) { try { p.Kill(); } catch { } return -1; }
+            if (!p.WaitForExit(timeoutMs))
+            {
+                KillProcessTree(p);
+                p.WaitForExit();
+                return -1;
+            }
             return p.ExitCode;
         }
         catch { return -1; }
     }
 
     // Run a command and capture stdout (used by Detect functions).
-    public static string Capture(string exe, string args, int timeoutMs = 10000)
+    public static (int ExitCode, string Output, string Error) CaptureResult(string exe, string args, int timeoutMs = 10000)
     {
         try
         {
@@ -124,16 +142,33 @@ public static class Run
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
             };
-            var p = Process.Start(psi);
-            if (p == null) return "";
-            var output = p.StandardOutput.ReadToEnd();
-            p.WaitForExit(timeoutMs);
-            if (!p.HasExited) { try { p.Kill(); } catch { } }
-            return output ?? "";
+            using var p = Process.Start(psi);
+            if (p == null) return (-1, "", "");
+
+            var outputTask = p.StandardOutput.ReadToEndAsync();
+            var errorTask = p.StandardError.ReadToEndAsync();
+            if (!p.WaitForExit(timeoutMs))
+            {
+                KillProcessTree(p);
+                p.WaitForExit();
+                System.Threading.Tasks.Task.WaitAll(new System.Threading.Tasks.Task[] { outputTask, errorTask }, 1000);
+                return (-1,
+                    outputTask.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? outputTask.Result : "",
+                    errorTask.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? errorTask.Result : "");
+            }
+
+            System.Threading.Tasks.Task.WaitAll(new System.Threading.Tasks.Task[] { outputTask, errorTask }, 1000);
+            return (p.ExitCode,
+                outputTask.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? outputTask.Result : "",
+                errorTask.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? errorTask.Result : "");
         }
-        catch { return ""; }
+        catch { return (-1, "", ""); }
     }
+
+    public static string Capture(string exe, string args, int timeoutMs = 10000)
+        => CaptureResult(exe, args, timeoutMs).Output;
 
     public static int Powercfg(string args) => Hidden($"powercfg.exe {args}");
     public static int Bcdedit(string args) => Hidden($"bcdedit.exe {args}");
@@ -455,8 +490,12 @@ public static class Task
     {
         try
         {
-            var output = Run.Capture("schtasks.exe", $"/Query /TN \"{taskPath}\" /FO LIST");
-            return output.Contains("Enabled");
+            var result = Run.CaptureResult("schtasks.exe", $"/Query /TN \"{taskPath}\" /XML");
+            if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.Output)) return false;
+
+            var document = XDocument.Parse(result.Output.TrimStart('\uFEFF'));
+            var enabled = document.Descendants().FirstOrDefault(element => element.Name.LocalName == "Enabled");
+            return enabled == null || (bool.TryParse(enabled.Value, out var isEnabled) && isEnabled);
         }
         catch { return false; }
     }
@@ -466,8 +505,7 @@ public static class Task
     {
         try
         {
-            var output = Run.Capture("schtasks.exe", $"/Query /TN \"{taskPath}\" /FO LIST");
-            return output.Length > 0 && !output.Contains("ERROR");
+            return Run.CaptureResult("schtasks.exe", $"/Query /TN \"{taskPath}\" /FO LIST").ExitCode == 0;
         }
         catch { return false; }
     }

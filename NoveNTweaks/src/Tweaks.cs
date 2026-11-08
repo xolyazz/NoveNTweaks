@@ -7125,12 +7125,13 @@ public static class Tweaks
 
     static bool U_tw_319()
     {
-        return true;
+        return Run.PsCmdlet("Set-MpPreference -DisableRealtimeMonitoring $false") == 0;
     }
 
     static bool D_tw_319()
     {
-        return true;
+        var output = Run.Capture("powershell.exe", "-NoProfile -NonInteractive -Command \"(Get-MpComputerStatus).RealTimeProtectionEnabled\"");
+        return string.Equals(output.Trim(), "False", StringComparison.OrdinalIgnoreCase);
     }
     // ───────── tw_320: Disable Memory Integrity / HVCI (big FPS gain on many CPUs) ─────────
     static bool A_tw_320()
