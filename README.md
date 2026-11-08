@@ -1,6 +1,6 @@
 # NoveN Tweaks
 
-An old Windows tweaking app I made with [Kl3ban](https://github.com/Kl3ban). I'm [xolyazz](https://github.com/xolyazz).
+An old Windows tweaking app made with [Kl3ban](https://github.com/Kl3ban).
 
 It's been sitting around for a while, but it still works pretty well, so I figured I'd put the source here. I've cleaned up the project and removed the old license check. The original UI is still there.
 
